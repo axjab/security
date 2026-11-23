@@ -1,6 +1,7 @@
 #!/bin/sh
 
 # PAM insertion gate and display-only authentication notices.
+# Authentication is performed separately by the cancellable fido-auth helper.
 # Gate returns 0 to try FIDO; otherwise PAM skips FIDO and uses password.
 # 'wrong' is [default=ignore]; 'accepted' runs only after pam_u2f success.
 # Never treat presence detection or a notice's exit status as authentication.
@@ -22,7 +23,9 @@ check_timeout() {
 
 check_dependencies() {
     [ -x /usr/bin/lsusb ] && [ -x /usr/bin/sleep ] &&
-        [ -x /usr/bin/stty ] && [ -x /usr/bin/dd ]
+        [ -x /usr/bin/stty ] && [ -x /usr/bin/dd ] &&
+        [ -x /usr/bin/fido2-token ] && [ -x /usr/bin/timeout ] &&
+        [ -x /usr/bin/grep ]
 }
 
 select_terminal() {
@@ -41,6 +44,14 @@ select_terminal() {
 
 key_is_inserted() {
     /usr/bin/lsusb -d "${YUBICO_VENDOR}:" >/dev/null 2>&1
+}
+
+fido_is_ready() {
+    # USB presence can precede the creation of a usable FIDO hidraw device.
+    # -L only enumerates devices; it does not change their credentials.
+    devices=$(/usr/bin/timeout 2 /usr/bin/fido2-token -L 2>/dev/null) || return 1
+    # Require the enumerated FIDO interface itself to belong to Yubico.
+    printf '%s\n' "$devices" | /usr/bin/grep -Eq '^/dev/hidraw[0-9]+: vendor=0x1050,'
 }
 
 clear_prompt() {
@@ -108,6 +119,7 @@ ctrl_c_pressed() {
 
 wait_for_key() {
     ticks=$((TIMEOUT * 4))
+    ready_ticks=0
     show_countdown "$TIMEOUT"
     begin_interrupt_capture || return 1
 
@@ -121,9 +133,15 @@ wait_for_key() {
             restore_terminal
             return 130
         fi
-        if key_is_inserted; then
-            restore_terminal
-            return 0
+        if key_is_inserted && fido_is_ready; then
+            ready_ticks=$((ready_ticks + 1))
+            # Allow hidraw/udev state to stabilize before pam-u2f is invoked.
+            if [ "$ready_ticks" -ge 3 ]; then
+                restore_terminal
+                return 0
+            fi
+        else
+            ready_ticks=0
         fi
         ticks=$((ticks - 1))
         if [ "$ticks" -gt 0 ] && [ $((ticks % 4)) -eq 0 ]; then
@@ -140,7 +158,7 @@ gate() {
     select_terminal || return 1
     trap 'on_interrupt' INT TERM HUP
 
-    if key_is_inserted; then
+    if key_is_inserted && fido_is_ready; then
         show_prompt 'TOUCH THE KEY'
         return 0
     fi
@@ -166,6 +184,13 @@ accepted_key_notice() {
     return 0
 }
 
+skipped_notice() {
+    if select_terminal; then
+        show_skipped
+    fi
+    return 0
+}
+
 wrong_key_notice() {
     if select_terminal; then
         show_wrong_key
@@ -180,6 +205,9 @@ main() {
             ;;
         wrong)
             wrong_key_notice
+            ;;
+        skipped)
+            skipped_notice
             ;;
         *)
             TIMEOUT=${1:-3}
