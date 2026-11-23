@@ -1,0 +1,118 @@
+#!/bin/sh
+
+# PAM insertion gate and display-only failure notice.
+# Gate returns 0 to try FIDO; otherwise PAM skips FIDO and uses password.
+# The 'wrong' mode must be configured [default=ignore] in PAM.
+# Yubico USB presence is not proof of an enrolled credential.
+
+POLL_INTERVAL=0.25
+YUBICO_VENDOR=1050
+ICON='󰷖 '
+TERMINAL_OPEN=0
+
+check_timeout() {
+    case $TIMEOUT in
+        [1-9]|[12][0-9]|30) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+check_dependencies() {
+    [ -x /usr/bin/lsusb ] && [ -x /usr/bin/sleep ]
+}
+
+select_terminal() {
+    terminal=${PAM_TTY:-}
+    case $terminal in
+        /dev/tty[0-9]*|/dev/pts/[0-9]*) ;;
+        *) return 1 ;;
+    esac
+    case $terminal in
+        *[!0-9]) return 1 ;;
+    esac
+    [ -c "$terminal" ] && [ -w "$terminal" ] || return 1
+    exec 3>"$terminal" || return 1
+    TERMINAL_OPEN=1
+}
+
+key_is_inserted() {
+    /usr/bin/lsusb -d "${YUBICO_VENDOR}:" >/dev/null 2>&1
+}
+
+clear_prompt() {
+    printf '\r\033[2K' >&3
+}
+
+show_prompt() {
+    clear_prompt
+    printf '\033[38;2;250;204;21m%s\033[0m \033[38;2;254;240;138m%s\033[0m' "$ICON" "$1" >&3
+}
+
+show_countdown() {
+    show_prompt 'KEY REQUIRED'
+    printf ' \033[38;2;148;163;184m[%ss]\033[0m' "$1" >&3
+}
+
+show_wrong_key() {
+    clear_prompt
+    printf '\033[38;2;239;68;68m%s WRONG KEY\033[0m\n' "$ICON" >&3
+}
+
+on_interrupt() {
+    trap - INT TERM HUP
+    if [ "$TERMINAL_OPEN" -eq 1 ]; then
+        clear_prompt
+    fi
+    exit 130
+}
+
+wait_for_key() {
+    ticks=$((TIMEOUT * 4))
+    show_countdown "$TIMEOUT"
+
+    while [ "$ticks" -gt 0 ]; do
+        /usr/bin/sleep "$POLL_INTERVAL" || return 1
+        key_is_inserted && return 0
+        ticks=$((ticks - 1))
+        if [ "$ticks" -gt 0 ] && [ $((ticks % 4)) -eq 0 ]; then
+            show_countdown "$((ticks / 4))"
+        fi
+    done
+    return 1
+}
+
+gate() {
+    check_timeout || return 1
+    check_dependencies || return 1
+    select_terminal || return 1
+    trap 'on_interrupt' INT TERM HUP
+
+    if key_is_inserted || wait_for_key; then
+        show_prompt 'TOUCH THE KEY'
+        return 0
+    fi
+    clear_prompt
+    return 1
+}
+
+wrong_key_notice() {
+    if select_terminal; then
+        show_wrong_key
+    fi
+    return 0
+}
+
+main() {
+    case ${1:-} in
+        wrong)
+            wrong_key_notice
+            ;;
+        *)
+            TIMEOUT=${1:-3}
+            gate
+            ;;
+    esac
+}
+
+main "$@"
+exit $?

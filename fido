@@ -1,0 +1,22 @@
+# /etc/pam.d/fido: replace only the previous FIDO auth rules.
+
+# No key, gate failure, or handled SIGINT => skip TWO modules.
+# auth [success=ignore default=2] pam_exec.so quiet quiet_log /usr/local/libexec/fido-prompt 9
+
+# Genuine FIDO success authenticates; failure continues.
+# auth sufficient pam_u2f.so authfile=/etc/u2f_mappings
+
+# Display-only notification AFTER a failed FIDO attempt.
+# auth [default=ignore] pam_exec.so quiet quiet_log /usr/local/libexec/fido-prompt wrong
+
+# The calling sudo PAM service must still include common-auth AFTER fido.
+# Leave other PAM rules untouched.
+
+
+# adds positive feedback
+
+auth [success=ignore default=4] pam_exec.so quiet quiet_log /usr/local/libexec/fido-prompt 9
+auth [success=ok default=2] pam_u2f.so authfile=/etc/u2f_mappings
+auth [default=ignore] pam_exec.so quiet quiet_log /usr/local/libexec/fido-prompt accepted
+auth sufficient pam_permit.so
+auth [default=ignore] pam_exec.so quiet quiet_log /usr/local/libexec/fido-prompt wrong
