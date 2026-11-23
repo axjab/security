@@ -1,7 +1,15 @@
 Package: core-sec
 Version: 0.0.0
 Section: utils
-Priority: optional
+Priority: important
 Architecture: all
-Maintainer: TODO <maintainer@example.invalid>
+Maintainer: axjab <axjab@github.com>
 Description: TODO package description
+Depends: lsusb,
+ libpam-u2f,
+ pamu2fcfg,
+ fido2-tools,
+ stty
+
+# Recommend ykman
+ 
