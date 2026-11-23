@@ -20,6 +20,7 @@ sudo -> @include fido
           no device / Ctrl+C / timeout -> next auth module (password)
        -> fido-auth (pam_exec): run pamtester fido-worker $PAM_USER
           -> fido-worker: pam_u2f verifies FIDO credential and touch
+          -> watcher is armed first, then TOUCH THE KEY is displayed
           -> while child is running, Ctrl+C is read from the terminal
              and cancels child; normal exit 0 succeeds; other results fail
        -> return PAM_SUCCESS only if isolated pam_u2f succeeded;

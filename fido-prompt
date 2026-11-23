@@ -3,7 +3,7 @@
 # PAM insertion gate and display-only authentication notices.
 # Authentication is performed separately by the cancellable fido-auth helper.
 # Gate returns 0 to try FIDO; otherwise PAM skips FIDO and uses password.
-# 'wrong' is [default=ignore]; 'accepted' runs only after pam_u2f success.
+# Notices are display-only; the auth helper invokes them after PAM results.
 # Never treat presence detection or a notice's exit status as authentication.
 # Yubico USB presence is not proof of an enrolled credential.
 
@@ -159,14 +159,16 @@ gate() {
     trap 'on_interrupt' INT TERM HUP
 
     if key_is_inserted && fido_is_ready; then
-        show_prompt 'TOUCH THE KEY'
+        # Let the auth helper start its Ctrl+C watcher before showing TOUCH.
+        clear_prompt
         return 0
     fi
 
     wait_for_key
     result=$?
     if [ "$result" -eq 0 ]; then
-        show_prompt 'TOUCH THE KEY'
+        # Let the auth helper start its Ctrl+C watcher before showing TOUCH.
+        clear_prompt
         return 0
     fi
     if [ "$result" -eq 130 ]; then
@@ -175,6 +177,13 @@ gate() {
     fi
     clear_prompt
     return "$result"
+}
+
+touch_notice() {
+    if select_terminal; then
+        show_prompt 'TOUCH THE KEY'
+    fi
+    return 0
 }
 
 accepted_key_notice() {
@@ -200,6 +209,9 @@ wrong_key_notice() {
 
 main() {
     case ${1:-} in
+        touch)
+            touch_notice
+            ;;
         accepted)
             accepted_key_notice
             ;;

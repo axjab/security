@@ -50,7 +50,7 @@ def simulate(name, fake_return, interrupt=False):
         after = termios.tcgetattr(slave)
         assert before == after, (name, 'TTY was not restored')
         expected_notice = 'skipped' if interrupt else ('accepted' if fake_return == 0 else 'wrong')
-        assert notices.read_text().splitlines() == [expected_notice], (name, notices.read_text())
+        assert notices.read_text().splitlines() == ['touch', expected_notice], (name, notices.read_text())
         assert (code == 0) == (fake_return == 0 and not interrupt), (name, code)
         os.close(master)
         os.close(slave)
