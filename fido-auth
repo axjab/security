@@ -1,0 +1,121 @@
+#!/usr/bin/python3
+"""Cancellable touch-only FIDO authentication for a PAM pam_exec rule.
+
+Authentication is delegated to pam_u2f in the separate fido-worker PAM
+service. The child is killed on Ctrl+C; this program never validates a key.
+"""
+
+import os
+import re
+import select
+import signal
+import subprocess
+import sys
+import termios
+import time
+
+PAMTESTER = "/usr/bin/pamtester"
+NOTICE = "/usr/local/libexec/fido-prompt"
+SERVICE = "fido-worker"
+TOUCH_TIMEOUT = 30
+
+
+def show_notice(mode):
+    try:
+        subprocess.run((NOTICE, mode), stdin=subprocess.DEVNULL,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                       timeout=2, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        pass  # Notification failure cannot count as authentication success.
+
+
+def stop_child(child):
+    if child is None or child.poll() is not None:
+        return
+    try:
+        os.killpg(child.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    try:
+        child.wait(timeout=0.5)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(child.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        child.wait()
+
+
+def interrupted(_number, _frame):
+    raise KeyboardInterrupt
+
+
+def authenticate():
+    user = os.environ.get("PAM_USER", "")
+    tty = os.environ.get("PAM_TTY", "")
+    if (os.geteuid() != 0 or not user or "\x00" in user
+            or not re.fullmatch(r"/dev/(?:pts/[0-9]+|tty[0-9]+)", tty)):
+        return 1
+
+    fd = None
+    old_settings = None
+    child = None
+    outcome = "error"
+    try:
+        fd = os.open(tty, os.O_RDWR | os.O_NOCTTY | os.O_CLOEXEC | os.O_NOFOLLOW)
+        old_settings = termios.tcgetattr(fd)
+        raw = old_settings.copy()
+        raw[6] = old_settings[6].copy()
+        raw[3] &= ~(termios.ICANON | termios.ECHO | termios.ISIG)
+        raw[6][termios.VMIN] = 0
+        raw[6][termios.VTIME] = 0
+        termios.tcsetattr(fd, termios.TCSANOW, raw)
+
+        child = subprocess.Popen(
+            (PAMTESTER, "-I", f"tty={tty}", SERVICE, user, "authenticate"),
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, close_fds=True, start_new_session=True,
+        )
+        deadline = time.monotonic() + TOUCH_TIMEOUT
+        # A touch prompt is shown only once this watcher is armed.
+        if child.poll() is None:
+            show_notice("touch")
+        while True:
+            if child.poll() is not None:
+                outcome = "accepted" if child.returncode == 0 else "wrong"
+                break
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                outcome = "skipped"
+                break
+            readable, _, _ = select.select((fd,), (), (), min(0.05, remaining))
+            if readable and b"\x03" in os.read(fd, 32):
+                outcome = "skipped"
+                break
+    except KeyboardInterrupt:
+        outcome = "skipped"
+    except (OSError, ValueError, subprocess.SubprocessError, termios.error):
+        outcome = "error"
+    finally:
+        stop_child(child)
+        if fd is not None:
+            if old_settings is not None:
+                try:
+                    termios.tcsetattr(fd, termios.TCSANOW, old_settings)
+                except termios.error:
+                    outcome = "error"
+            os.close(fd)
+
+    if outcome in ("accepted", "wrong", "skipped"):
+        show_notice(outcome)
+    return 0 if outcome == "accepted" else 1
+
+
+def main():
+    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, interrupted)
+    return authenticate()
+
+
+if __name__ == "__main__":
+    sys.exit(main())
